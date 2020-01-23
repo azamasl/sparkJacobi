@@ -1,0 +1,87 @@
+package edu.nyu.optim
+import scala.math.random
+import org.apache.spark.sql.SparkSession
+import breeze.linalg//{DenseVector, Vector}
+//import org.apache.spark.mllib.linalg.{DenseVector, Vector, Vectors}
+
+object Jacobi {
+    def compute_residual(//Compute the residual norm for the given u
+      u: Array[Double],
+      N: Int,
+      invhsq: Double): Double = {
+        var tmp =0.0
+        var res =0.0
+        for (i <- 1 until N) {
+          tmp = (2.0*u(i) - u(i-1) - u(i+1)) * invhsq - 1
+          res += tmp * tmp
+        }
+        
+        Math.sqrt(res)
+      }  
+    
+  def main(args: Array[String]) {
+    
+    val spark = SparkSession.builder()
+      .appName("Spark GS")
+      //TODO: when running on Dumbo I guess you need to comment the next line:
+      .master("local[*]")
+      .getOrCreate()  
+
+      val max_iters : Int  =1000
+      val tol : Double =1e-5
+      val N : Int =9 //Number of discritizations                
+      val h : Double =1.0/(N+1)
+      val hsq: Double =h*h  
+      val invhsq : Double = 1.0/hsq
+
+      /**
+       Read matrix data from HDFS file A.txt create an RDD representing a matrix where a key is the column id
+       and a value contains the row id and the matrix element.Finally group elements of matrix A by column
+      
+      //val A = sc.textFile("A.txt").repartition(sc.defaultParallelism * parallelism)
+      //      val A_rdd = A.map{s =>
+      //        val parts = s.split("\\s+")
+      //        (parts(1).toLong, (parts(0).toLong, parts(2).toDouble))
+      //     }.groupByKey().cache() 
+            
+            
+       Read vector data from HDFS file u.txt
+
+        create an RDD representing a vector where a key is the row id and a value is the vector element.
+        //       val u = sc.textFile("u.txt").repartition(sc.defaultParallelism * parallelism)// same here: "hdfs:....../vector.txt"
+				//       var u_rdd = u.map{s =>
+        //          val parts = s.split("\\s+")
+        //          (parts(0).toLong, parts(1).toDouble)
+        //       }    
+      */
+      
+      var u = Array.fill[Double](N+2)(0.0)//initialize to 0     
+      var unew = Array.fill[Double](N+2)(0.0)//initialize to 0
+      var res0 = compute_residual(u, N, invhsq)
+      var res = res0
+      
+      var iter = 1
+      while ( iter <= max_iters && (res/res0 > tol)) {
+        
+          for (i <- 1 until N+1){
+            unew(i)  = 0.5 * (hsq + u(i-1) + u(i+1));
+          }
+        
+          for (i <- 1 until N+1){
+            u(i)  = unew(i)
+          }
+          
+        //  if (0 == (iter % 10)) {
+            res = compute_residual(u, N, invhsq);
+            println("Iter "+iter+": Residual:"+ res);
+        //  }
+          
+          iter+=1
+        }
+     
+      spark.stop()
+  }
+} 
+
+
+

@@ -1,0 +1,88 @@
+package edu.nyu.optim
+
+import breeze.linalg.{DenseMatrix, DenseVector}
+import org.apache.spark.annotation.DeveloperApi
+import org.apache.spark.rdd.RDD
+import org.apache.spark.{Partition, SparkContext, TaskContext}
+
+import scala.reflect.ClassTag
+
+object Jacobi2 {
+
+  def main(args: Array[String]) {
+    val numPartitions = 5//100
+    val n = 100000//0000//10^9
+    val time1 = System.currentTimeMillis
+    //1- Create the Spark Context
+    val sc = new SparkContext("local[5]", "Jacobi2")
+
+    /*2- Create RDD with the columns of A and the RDD with the columns of B
+        - Sequence RDD is a class we created to generate an RDD of 'n' rows and a random DenseVector in each row. You can load you data instead here.
+     */
+    val colA_RDD: SequenceRDD[DenseVector[Double]] = new SequenceRDD(sc, numPartitions, n, new VectorCreator(n))
+    val rowB_RDD: SequenceRDD[DenseVector[Double]] = new SequenceRDD(sc, numPartitions, n, new VectorCreator(1))
+
+    /*2- We create the structure of the RDD we need: a row of the RDD has a row of 'a' transposed and a row of 'b'. So each row has two vectors
+        - Using zip, we assume that colsA_RDD and rowsB_RDD are partioned in the same way
+        - Zipping is not mandatory, maybe your matrices A and B are already stored in such a way that you can load it directly into aColsBrows
+     */
+    val aColsBrows =  colA_RDD.zip(rowB_RDD)
+
+    //4- We apply the outer product function to each row of the RDD. Now, each row is a matrix with the same shape as 'c' (cNormal, see below)
+    val cParts: RDD[DenseMatrix[Double]] = aColsBrows.map{ case (colA: DenseVector[Double], rowB: DenseVector[Double]) =>
+      val partialMatrix = DenseMatrix.zeros[Double](colA.length, rowB.length)
+      for (i <- 0 to colA.length-1){
+        // :*  is the element-wise multiplication (i.e. scalar product)
+        partialMatrix(i,::) := (rowB.t :* colA(i))
+      }
+      partialMatrix
+    }
+
+    //5- We sum all the matrices in the rows of the RDD, obtaining 'c' again.
+    val c: DenseMatrix[Double] = cParts.reduce(_ + _)
+    //println(c)
+    val time2 = System.currentTimeMillis
+    val elaptime = (time2-time1)/1000.0
+    println("\n Time elapsed is "+ elaptime +" seconds.") 
+  }
+}
+
+class VectorCreator(length: Int) extends Function[Int,DenseVector[Double]] with Serializable{
+  def apply(i: Int): DenseVector[Double] = DenseVector.rand(length)
+}
+
+class SequenceRDD[T: ClassTag](sc: SparkContext, numPartitions: Int, rddLength: Int, createItem: Int => T) extends RDD[T](sc,Nil){
+  @DeveloperApi
+  override def compute(split: Partition, context: TaskContext): Iterator[T] = {
+    val fullPartitionsLength = if(numPartitions == 1) rddLength else rddLength / (numPartitions - 1)
+    val leftOverPartitionsLength = if(numPartitions == 1) 0 else rddLength % (numPartitions - 1)
+    val isFullPartition = if(numPartitions == 1) true else split.index != numPartitions - 1
+
+    val length = if(isFullPartition)
+      fullPartitionsLength
+    else
+      leftOverPartitionsLength
+
+
+    Stream.from(split.index*fullPartitionsLength).take(length).map(createItem).iterator
+  }
+
+
+  override protected def getPartitions: Array[Partition] = (0 until numPartitions).map(p => new DummyPartition(p)).toArray
+}
+
+class DummyPartition(val partition: Int) extends Partition with Serializable {
+  override val index: Int = partition
+}
+/*
+object NaiveMultiplication{
+
+  def main(args: Array[String]): Unit = {
+    val n = 1000
+    //We create two matrices, 'a' and 'b', and we multiply them with the conventional method.
+    val a: DenseMatrix[Double] = DenseMatrix.rand(2,n)
+    val b: DenseMatrix[Double] = DenseMatrix.rand(n,3)
+    val cNormal = a * b
+    println(s"Dot product of a and b is \n$cNormal")
+  }
+}*/

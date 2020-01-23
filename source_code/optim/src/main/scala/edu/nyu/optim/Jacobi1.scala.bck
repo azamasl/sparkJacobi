@@ -1,0 +1,174 @@
+ package edu.nyu.optim
+
+import org.apache.spark.sql.SparkSession
+ import org.apache.spark.mllib.linalg.distributed.{MatrixEntry, CoordinateMatrix}
+ import breeze.numerics._
+
+object Jacobi1 {
+   
+   def appMain(spark: SparkSession,  args: Array[String]) {
+
+     val sc = spark.sparkContext
+     val N = args(0).toInt    
+    // val blockSize = N
+     val numPartitions = args(1).toInt //Number of the worker
+     val max_iters = 4
+     //val numPartitions = 100
+
+     val tol : Double =1e-5
+     val h : Double =1.0/(N+1)    
+     val hsq: Double =h*h
+     val hsqHalf: Double = 0.5*hsq
+     val invhsq : Double = 1/hsq
+     var res: Double= 1
+     var k=0//iteration
+     var ress= Array.fill(max_iters)(0.0)   
+     // A is square matrix
+     val A_rowsPerBlock = N
+     val A_colsPerBlock = N/numPartitions//5000/5=1000 // Make sure this value is int
+     // u is a column vector
+     val u_rowsPerBlock = A_colsPerBlock
+     val u_colsPerBlock = 1     
+     //val size = blockSize * blockSize
+
+     val time1 = System.currentTimeMillis
+           ////Matrices.sparse( A_rowsPerBlock, A_colsPerBlock,Array(0,2),Array(blockSize-2,blockSize-1),  Array(-1.0, 2.0))
+//     val A_rdd= sc.parallelize( { for(i <- 0 until blockSize) yield (0,i)}, parallelism)
+//                      .map{ coord => 
+//                        val i = coord._2//row number
+//                        if(i==0){//Matrices.sparse( A_rowsPerBlock,A_colsPerBlock,Array(0,2), Array(0,1) , Array(2.0,-1.0))) 
+//                            var Vd = DenseVector.fill(A_rowsPerBlock){ 0.000000000001}.toArray
+//                            Vd(i) = 2.0    
+//                            Vd(i+1)  = -1.0
+//                            (coord, Matrices.dense(A_rowsPerBlock, A_colsPerBlock,Vd))
+//                              
+//                        }
+//                        else{
+//                           if(i==blockSize-1){ 
+//                               var Vd = DenseVector.fill(A_rowsPerBlock){ 0.000000000001}.toArray
+//                               Vd(i-1)  = -1.0
+//                               Vd(i) = 2.0
+//                               (coord, Matrices.dense(A_rowsPerBlock, A_colsPerBlock,Vd))
+//                           }
+//                           else {//Matrices.sparse( A_rowsPerBlock, A_colsPerBlock, Array(0,3), Array(i-1,i,i+1), Array(-1.0,2.0,-1.0)))
+//                               var Vd = DenseVector.fill(A_rowsPerBlock){ 0.000000000001}.toArray
+//                               Vd(i-1)  = -1.0
+//                               Vd(i) = 2.0    
+//                               Vd(i+1)  = -1.0
+//                             (coord, Matrices.dense(A_rowsPerBlock, A_colsPerBlock,Vd))
+//                                 
+//                           }
+//                        }
+//                      }
+//      Matrices.zeros(blockSize,1)
+//      val A = new BlockMatrix(A_rdd, A_rowsPerBlock, A_colsPerBlock,blockSize,blockSize ).cache()
+//      A.validate() 
+      
+     
+     
+     var A0 : List[(Int, Int, Double)] = List()
+     A0= A0:+(0, 0, 2.0):+(0 , 1 , -1.0) //First rows
+     
+     for(r <- 1 until N-1){
+       A0= A0 :+ (r, r-1 ,-1.0) :+ (r, r, 2.0) :+ (r, r+1, -1.0)  
+     }      
+     val r = N-1//Last two rows, Key is the column Number
+     A0= A0 :+ (r,r-1, -1.0) :+ (r,r, 2.0)  
+     
+     
+     val Aentries = sc.parallelize(A0.seq, numPartitions).map{case(i, j, v) => MatrixEntry(i, j, v)}
+     val Acoor = new CoordinateMatrix(Aentries, N, N)
+     val A = Acoor.toBlockMatrix(A_rowsPerBlock, A_colsPerBlock)
+     
+//      val u_rdd = sc.parallelize({ for(i <- 0 until blockSize) yield (i,0)})
+//      .map{coord => 
+//          val i = coord._1//row number
+//          //Ridiculous!!! It returns an empty collection if I fill matrix of all zeros so I set to 10E-12: 0.000000001
+//         (coord, Matrices.dense(1,1,DenseVector.fill(1){ 0.000000000001}.toArray))//Matrices.zeros(u_rowsPerBlock,u_colsPerBlock)            
+//      }.cache()//column vector   
+//      
+//      var u = new BlockMatrix(u_rdd,u_rowsPerBlock,u_colsPerBlock, blockSize,1)
+//      u.validate()  
+      
+     var u0 : List[(Int, Int,Double)] = List()
+     for(i <- 0 until N){ u0=u0 :+ (i, 0,  0.0)} 
+     val uentries = sc.parallelize(u0.seq, numPartitions).map{case(i, j, v) => MatrixEntry(i, j, v)}
+     val ucoor = new CoordinateMatrix(uentries, N, 1)  
+     
+     var u = ucoor.toBlockMatrix(u_rowsPerBlock, u_colsPerBlock)  
+     
+      while (k < max_iters && (res > tol)){
+
+          //RunJacobiDist.report("computing A*u_k")
+          var Auk = A.multiply(u)//Auk should be column vector.         
+          
+
+          //RunJacobiDist.report("computing 0.5*hsq-0.5A_i*u_k")
+          val Aukcoor = new CoordinateMatrix(
+            Auk.toCoordinateMatrix()
+            .entries
+            .map (entry => MatrixEntry(entry.i, entry.j, hsqHalf - 0.5 * entry.value)))
+
+          //Aukcoor.entries.collect().foreach { x => println("i = "+x.i+", j = "+x.j+", value = "+x.value) }
+          
+          //RunJacobiDist.report("computing u_{k+1}")
+          u = Aukcoor.toBlockMatrix(u_rowsPerBlock, u_colsPerBlock).add(u)
+          
+           //val ucoor = u.toCoordinateMatrix()
+         // ucoor.entries.collect().foreach { x => println("i = "+x.i+", j = "+x.j+", value = "+x.value) }
+          
+          
+          //RunJacobiDist.report("computing A*u_{k+1}")
+          val Aukplus1 = A.multiply(u)  
+         
+          
+          //RunJacobiDist.report("computing residual")
+          res= math.sqrt(
+               Aukplus1
+              .toCoordinateMatrix()
+              .entries
+              .map(entry => math.pow(invhsq* entry.value - 1, 2))
+              .reduce(_ + _))
+          ress(k) = res
+          println("________________END OF ITERATION = "+k+"\n________________RES= "+res)
+          k+=1
+      }
+     
+      val time2 = System.currentTimeMillis
+      val elaptime = (time2-time1)/1000.0
+      val outputFile = "jac_"+N+"_"+parallelism      
+      val outputData = ("\n Max_iter = " + max_iters + "\n N = "+ N +" Time_elapsed(s) = "+ elaptime + " \n " + ress.mkString("\n ") )
+
+      
+      println("\n Number of iterations	 = "+ k)  
+      println(ress.mkString("\n")) 
+      println("\n Time elapsed is "+ elaptime +" seconds.") 
+   }
+}
+
+    /**
+       //A blockMatrix of single entry to make matrix scalar multiplication possible!!!
+       val half_rdd = sc.parallelize(IndexedSeq((0,0))).
+         map{coord =>((0,0), Matrices.dense(1,1,DenseVector.fill(1){0.5}.toArray))
+       }   
+       val halfBM = new BlockMatrix(half_rdd,1, 1, 1,1).cache()
+      
+       //A blockMatrix of column vector with single entry blocks --just like u
+      val hsqHalf_rdd = sc.parallelize({ for(i <- 0 until blockSize) yield (i,0)})
+      .map{coord => 
+          val i = coord._1  
+          (coord, Matrices.dense(1,1,DenseVector.fill(1){hsqHalf}.toArray))
+      }//column vector 
+       val hsqHalfBM = new BlockMatrix(hsqHalf_rdd, u_rowsPerBlock, u_colsPerBlock, blockSize,1).cache() 
+    
+           
+        val Acoor = A.toCoordinateMatrix()
+        Acoor.entries.collect().foreach { x => println("i = "+x.i+", j = "+x.j+", value = "+x.value) }    
+      println("block:" + blockSize + "\t" + (System.nanoTime() - t) / 1e9 + " seconds")     
+        
+       aa.toIndexedRowMatrix()
+      .rows // Extract RDD[org.apache.spark.mllib.linalg.Vector]
+      .collect // you can use toLocalIterator to limit memory usage
+      .foreach(println) // Iterate over local Iterator and print
+      
+      */

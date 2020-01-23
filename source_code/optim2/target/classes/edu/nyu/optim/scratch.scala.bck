@@ -1,0 +1,84 @@
+ package edu.nyu.optim
+
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.mllib.linalg.{Matrix, Vectors, Matrices}
+import org.apache.spark.mllib.linalg.distributed.{BlockMatrix}
+ 
+object Jacobiscrach {
+  def appMain(spark: SparkSession,  args: Array[String]) {
+     //val inpath = args(0)
+     val N = args(0).toInt
+     val max_iters = args(1).toInt
+     val numPartitions = 100
+     //val max_iters : Int  = 10
+     //val N : Int =9 //Number of discritizations 
+     val tol : Double =1e-5
+     val h : Double =1.0/(N+1)    
+     val hsq: Double =h*h
+     val hsqHalf: Double = 0.5*hsq
+     val invhsq : Double = 1/hsq //More precisely half invhsq
+     var res: Double= 1
+     var k=0//iteration
+     
+    val sc = spark.sparkContext
+    val parallelism = args(1).toInt // You should think of this of the number of the worker
+    val blockSize = args(0).toInt// is the length of the column of the matrix (out matrix is square and symetric)
+    val size = blockSize * blockSize
+    val rdd = sc.parallelize( { for(i <- 0 until blockSize) yield (i,0)}, parallelism)
+                    .map{ coord => 
+                      val i = coord._1//row number
+                      if(i==0) (coord, Matrices.sparse(blockSize,1,Array(0,2), Array(0,1) , Array(2.0,-1.0)).transpose)//Assuming we have a column vectors
+                      else{
+                         if(i==blockSize-1) (coord, Matrices.sparse( blockSize,1, Array(0,2),Array(blockSize-2,blockSize-1),  Array(-1.0, 2.0)).transpose)
+                         else (coord,  Matrices.sparse(blockSize,1, Array(0,3), Array(i-1,i,i+1), Array(-1.0,2.0,-1.0)).transpose)
+                      }
+                    }
+    
+    val bm = new BlockMatrix(rdd, 1, blockSize).cache()
+    bm.validate()   
+    val rdd_u = sc.parallelize(IndexedSeq((0,0)), parallelism).map(coord =>((0,0), Matrices.ones(blockSize,1)))//column vector
+      
+    val bv = new BlockMatrix (rdd_u,blockSize,1).cache
+    bv.validate()
+//    bv.toIndexedRowMatrix()
+//  .rows // Extract RDD[org.apache.spark.mllib.linalg.Vector]
+//  .collect // you can use toLocalIterator to limit memory usage
+//  .foreach(println) // Iterate over local Iterator and print
+    
+  
+  println(" bv column per block"+bv.colsPerBlock + " bv row per block"+bv.rowsPerBlock)
+  
+  val t = System.nanoTime()
+  // multiply matrix with itself
+  val aa = bm.multiply(bv)
+  aa.validate()
+  println("block:" + blockSize + "\t" + (System.nanoTime() - t) / 1e9 + " seconds")     
+    
+//   aa.toIndexedRowMatrix()
+//  .rows // Extract RDD[org.apache.spark.mllib.linalg.Vector]
+//  .collect // you can use toLocalIterator to limit memory usage
+//  .foreach(println) // Iterate over local Iterator and print
+    
+  }
+}
+
+      /**
+       Read matrix data from HDFS file A.txt create an RDD representing a matrix where a key is the column id
+       and a value contains the row id and the matrix element.Finally group elements of matrix A by column
+      
+      //val A = sc.textFile("A.txt").repartition(sc.defaultParallelism * parallelism)
+      //      val A_rdd = A.map{s =>
+      //        val parts = s.split("\\s+")
+      //        (parts(1).toLong, (parts(0).toLong, parts(2).toDouble))
+      //     }.groupByKey().cache() 
+            
+            
+       Read vector data from HDFS file u.txt
+
+        create an RDD representing a vector where a key is the row id and a value is the vector element.
+        //       val u = sc.textFile("u.txt").repartition(sc.defaultParallelism * parallelism)// same here: "hdfs:....../vector.txt"
+				//       var u_rdd = u.map{s =>
+        //          val parts = s.split("\\s+")
+        //          (parts(0).toLong, parts(1).toDouble)
+        //       }    
+      */
